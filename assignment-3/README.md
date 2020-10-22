@@ -12,7 +12,7 @@ In this project, we implemented the following two locking algorithms:
 
 ## Requirements
 
-* Python >= 3.6
+* Python >= 3.7
 
 ## How to run
 
