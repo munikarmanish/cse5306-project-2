@@ -28,64 +28,52 @@ class CommunicationThread(tr.Thread):
         self.queue = []
 
     def deliver(self, event):
-        print(f"P{self.id}: Processed event P{event.pid}.{event.clock}")
-
-    def acknowledge(self, event):
-        with self.clock.get_lock():
-            self.clock.value += 1
-        msg = dict(type=MSG_TYPE_ACK, pid=event.pid, clock=event.clock)
-        data = json.dumps(msg).encode()
-        for port in PORTS:
-            self.sock.sendto(data, ("localhost", port))
-        self.acknowledged[event] = True
+        pid = event["pid"]
+        print("P{}: Processed event P{}.{}".format(self.id, pid, event["clock"][pid]))
 
     def run(self):
         while True:
             # read the message
             data = self.sock.recvfrom(MAX_BUF_SIZE)[0]
             msg = json.loads(data.decode())
+            self.queue.append(msg)
 
-            # check if ack
-            event = Event(clock=msg["clock"], pid=msg["pid"])
-            if msg["type"] == MSG_TYPE_ACK:
-                self.acks[event] += 1
-                if self.queue:
-                    if self.acks[self.queue[0]] >= NUM_MEMBERS:
-                        self.deliver(heappop(self.queue))
-                    elif not self.acknowledged[self.queue[0]]:
-                        self.acknowledge(event)
+            ready_indices = []
+            for i, m in enumerate(self.queue):
+                pid = m["pid"]
+                if pid != self.id and m["clock"][pid] != self.clock[pid] + 1:
+                    continue
+                for k in range(NUM_MEMBERS):
+                    if k != pid and m["clock"][pid] > self.clock[pid]:
+                        continue
+                ready_indices.append(i)
+                self.deliver(m)
 
-            # msg is a new event
-            elif msg["type"] == MSG_TYPE_EVENT:
-                # update local clock
-                with self.clock.get_lock():
-                    self.clock.value += 1
+            for i in ready_indices[::-1]:
+                self.queue.pop(i)
 
-                heappush(self.queue, event)
-                self.acks[event] = 0
-
-                if not self.acknowledged[event]:
-                    self.acknowledge(event)
+            # update local vector clock
+            for id in range(NUM_MEMBERS):
+                self.clock[id] = max(self.clock[id], msg["clock"][id])
 
 
 class MemberProcess(mp.Process):
     def __init__(self, id, **kwargs):
         super().__init__(**kwargs)
         self.id = id
-        self.clock = mp.Value("i", 0)
+        self.clock = [0] * NUM_MEMBERS
         self.sock = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
 
     def do_operation(self):
         time.sleep(0.01)
 
     def broadcast_event(self):
-        with self.clock.get_lock():
-            self.clock.value += 1
-        msg = dict(pid=self.id, clock=self.clock.value, type=MSG_TYPE_EVENT)
+        self.clock[self.id] += 1
+        msg = dict(pid=self.id, clock=self.clock)
+        print(f"P{self.id}: Creating event P{self.id}.{msg['clock'][self.id]}")
         data = json.dumps(msg).encode()
         for port in PORTS:
             self.sock.sendto(data, ("localhost", port))
-        print(f"P{self.id}: Sent event P{self.id}.{msg['clock']}")
 
     def run(self):
         communication_thread = CommunicationThread(id=self.id, clock=self.clock)
